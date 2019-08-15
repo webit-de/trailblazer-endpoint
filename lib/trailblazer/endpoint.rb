@@ -1,54 +1,36 @@
-require "dry/matcher"
-
 module Trailblazer
   class Endpoint
-    # this is totally WIP as we need to find best practices.
-    # also, i want this to be easily extendable.
-    Matcher = Dry::Matcher.new(
-      present: Dry::Matcher::Case.new( # DISCUSS: the "present" flag needs some discussion.
-        match:   ->(result) { result.success? && result["present"] },
-        resolve: ->(result) { result }),
-      success: Dry::Matcher::Case.new(
-        match:   ->(result) { result.success? },
-        resolve: ->(result) { result }),
-      created: Dry::Matcher::Case.new(
-        match:   ->(result) { result.success? && result["model.action"] == :new }, # the "model.action" doesn't mean you need Model.
-        resolve: ->(result) { result }),
-      not_found: Dry::Matcher::Case.new(
-        match:   ->(result) { result.failure? && result["result.model"] && result["result.model"].failure? },
-        resolve: ->(result) { result }),
-      # TODO: we could add unauthorized here.
-      unauthenticated: Dry::Matcher::Case.new(
-        match:   ->(result) { result.failure? && result["result.policy.default"].failure? }, # FIXME: we might need a &. here ;)
-        resolve: ->(result) { result }),
-      invalid: Dry::Matcher::Case.new(
-        match:   ->(result) { result.failure? && result["result.contract.default"] && result["result.contract.default"].failure? },
-        resolve: ->(result) { result })
-    )
+
+    attr_reader :matcher, :handler
 
     # `call`s the operation.
-    def self.call(operation_class, handlers, *args, &block)
-      result = operation_class.(*args)
-      new.(result, handlers, &block)
+    def self.call(operation_class, args: {}, **options, &block)
+      result = operation_class.(args)
+      new(options.slice(:handler, :matcher_class)).(result, &block)
     end
 
-    def call(result, handlers=nil, &block)
-      matcher.(result, &block) and return if block_given? # evaluate user blocks first.
-      matcher.(result, &handlers)     # then, generic Rails handlers in controller context.
+    def initialize(handler: nil, matcher_class: Matcher::Default)
+      @handler = handler
+      @matcher = matcher_class.build_matcher
     end
 
-    def matcher
-      Matcher
+    def call(result, &block)
+      matcher.(result) do |m|
+        yield(m) if block_given? # evaluate user blocks first
+        handler.call(m) if handler # then, generic handler
+      end
     end
 
     module Controller
       # endpoint(Create) do |m|
       #   m.not_found { |result| .. }
       # end
-      def endpoint(operation_class, options={}, &block)
-        handlers = Handlers::Rails.new(self, options).()
-        Endpoint.(operation_class, handlers, *options[:args], &block)
+      def endpoint(operation_class, **options, &block)
+        options[:handler] ||= Handler::Rails.new(self, options)
+        Endpoint.(operation_class, options, &block)
       end
     end
   end
 end
+
+require 'trailblazer/endpoint/matcher'
